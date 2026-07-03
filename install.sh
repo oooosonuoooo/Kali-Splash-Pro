@@ -38,6 +38,70 @@ warn()    { echo -e "${YELLOW}[!]${RESET} $*"; }
 error()   { echo -e "${RED}[✘]${RESET} $*" >&2; }
 header()  { echo -e "\n${BOLD}${CYAN}$*${RESET}"; }
 
+config_has_videos() {
+    local path="$1"
+    [[ -s "${path}" ]] || return 1
+    CONFIG_PATH="${path}" python3 - <<'PYEOF'
+import json
+import os
+import sys
+
+try:
+    with open(os.environ["CONFIG_PATH"], encoding="utf-8") as f:
+        data = json.load(f)
+except (OSError, json.JSONDecodeError):
+    sys.exit(1)
+
+if not isinstance(data, dict) or not data:
+    sys.exit(1)
+
+for value in data.values():
+    if isinstance(value, str) and value:
+        sys.exit(0)
+sys.exit(1)
+PYEOF
+}
+
+find_migratable_config() {
+    local current_root
+    current_root="$(realpath "${APP_ROOT}")"
+
+    while IFS= read -r candidate; do
+        local candidate_root
+        candidate_root="$(realpath "$(dirname "${candidate}")")"
+        [[ "${candidate_root}" == "${current_root}" ]] && continue
+        [[ -f "${candidate_root}/src/player.py" ]] || continue
+        if config_has_videos "${candidate}"; then
+            printf '%s\n' "${candidate}"
+            return 0
+        fi
+    done < <(
+        find "${HOME}" -maxdepth 4 -type f -name config.json \
+            -path '*/Kali*Splash*/config.json' 2>/dev/null | sort
+    )
+
+    return 1
+}
+
+migrate_existing_config_if_needed() {
+    if config_has_videos "${CONFIG}"; then
+        return 0
+    fi
+
+    local old_config
+    old_config="$(find_migratable_config || true)"
+    if [[ -z "${old_config}" ]]; then
+        return 0
+    fi
+
+    if [[ -f "${CONFIG}" ]]; then
+        cp "${CONFIG}" "${CONFIG}.pre-migration-backup"
+        warn "Backed up existing empty/invalid config to config.json.pre-migration-backup."
+    fi
+    cp "${old_config}" "${CONFIG}"
+    success "Migrated existing video config from: ${old_config}"
+}
+
 # ---------------------------------------------------------------------------
 # Uninstall mode
 # ---------------------------------------------------------------------------
@@ -208,6 +272,7 @@ fi
 # ---------------------------------------------------------------------------
 # Pre-create config and log (if absent)
 # ---------------------------------------------------------------------------
+migrate_existing_config_if_needed
 if [[ ! -f "${CONFIG}" ]]; then
     echo '{}' > "${CONFIG}"
     success "Created empty config.json."
