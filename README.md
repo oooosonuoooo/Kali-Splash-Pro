@@ -28,13 +28,14 @@ Replaces the jarring flicker of a bare XFCE desktop loading with a smooth fullsc
 3. [How to Use](#-how-to-use)
 4. [How It Works](#-how-it-works)
 5. [Changing the Splash Video](#-changing-the-splash-video)
-6. [Enable / Disable Autostart](#-enable--disable-autostart)
-7. [Troubleshooting](#-troubleshooting)
-8. [Uninstall](#-uninstall)
-9. [Known Limitations](#-known-limitations)
-10. [Testing](#-testing)
-11. [Architecture Notes](#-architecture-notes)
-12. [Changelog](#-changelog)
+6. [Playlist & Shuffle](#-playlist--shuffle)
+7. [Enable / Disable Autostart](#-enable--disable-autostart)
+8. [Troubleshooting](#-troubleshooting)
+9. [Uninstall](#-uninstall)
+10. [Known Limitations](#-known-limitations)
+11. [Testing](#-testing)
+12. [Architecture Notes](#-architecture-notes)
+13. [Changelog](#-changelog)
 
 ---
 
@@ -100,9 +101,11 @@ The Manager GUI has three main sections:
 
 ### 🖥 Monitors & Videos
 - Each connected monitor is listed (detected via `xrandr`)
-- Click **📂 Browse** to choose a video file for that monitor
-- Click **💾 Save Config** to write your choices to `config.json`
-- Click **▶ Preview** to test the video in fullscreen without rebooting
+- Click **📂 Add** to add one or more videos to that monitor's playlist
+- Use **Remove**, **Clear**, **↑ Up**, and **↓ Down** to manage playlist order
+- Enable **Shuffle** when you want a random video picked at login
+- Click **💾 Save Config** to write your playlist choices to `config.json`
+- Click **▶ Preview** to test the selected video, or a playlist pick if nothing is selected
 
 ### ⚙ Dependencies
 - Shows green ✔ or red ✘ for each required tool
@@ -131,6 +134,7 @@ Login → XFCE session starts → Autostart .desktop fires
     → Waits for X server (up to 10 s)
     → Reads config.json
     → Detects monitors via xrandr
+    → Selects one valid video per monitor
     → Launches mpv fullscreen (OpenGL + hardware decode)
     → Guard Dog: keeps mpv on top for first 5 s (fast), then every 0.5 s
     → Video ends → mpv exits → player.py exits → desktop appears normally
@@ -149,11 +153,41 @@ Login → XFCE session starts → Autostart .desktop fires
 
 1. Open **Kali Splash Pro** from the menu (or `python3 src/manager.py`)
 2. Find your monitor name (e.g. `HDMI-0`)
-3. Click **📂 Browse** → select your `.mp4`, `.mkv`, `.avi`, or `.webm` file
+3. Click **📂 Add** → select one or more `.mp4`, `.mkv`, `.avi`, `.webm`, or `.mov` files
 4. Click **💾 Save Config**
 5. Click **🧪 Test Splash Now** to preview it
 
 Supported formats: anything mpv can play (MP4, MKV, AVI, WebM, MOV, etc.)
+
+---
+
+## 🔀 Playlist & Shuffle
+
+Each monitor can use a single video or a playlist. When the splash starts at login, Kali Splash Pro chooses only one valid video per monitor and launches that file. It does not play every playlist item one after another.
+
+With **Shuffle** enabled, the player randomly picks one existing file from that monitor's playlist each time `src/player.py` runs. With **Shuffle** disabled, it uses the first existing file in the playlist.
+
+Old configs still work:
+
+```json
+{
+    "HDMI-0": "/home/user/Videos/splash.mp4"
+}
+```
+
+The Manager saves playlist configs like this:
+
+```json
+{
+    "HDMI-0": {
+        "videos": [
+            "/home/user/Videos/splash1.mp4",
+            "/home/user/Videos/splash2.mkv"
+        ],
+        "shuffle": true
+    }
+}
+```
 
 ---
 
@@ -274,7 +308,7 @@ rm -rf /path/to/Kali-Splash-Pro
 | X11 only | Wayland is not supported (mpv `--fs-screen` and `xdotool` are X11-specific) |
 | Login session only | Works only in a full XFCE/X11 session; not at GDM/LightDM level |
 | Folder must stay put | Moving the folder breaks the autostart link (run `install.sh` to repair) |
-| Single video per monitor | Each monitor plays one video; no playlist support |
+| One startup pick per monitor | Playlists choose one video at login; they are not continuous playback queues |
 | No Wayland guard dog | `xdotool` is unavailable on Wayland |
 | Lock file persistence | If player.py crashes hard, delete `/tmp/kali-splash.lock` manually |
 
@@ -305,11 +339,22 @@ Kali-Splash-Pro/
 
 ```json
 {
-    "HDMI-0": "/home/user/Videos/splash.mp4",
-    "HDMI-1": "/home/user/Videos/splash2.mp4"
+    "HDMI-0": {
+        "videos": [
+            "/home/user/Videos/splash1.mp4",
+            "/home/user/Videos/splash2.mp4"
+        ],
+        "shuffle": true
+    },
+    "HDMI-1": {
+        "videos": [
+            "/home/user/Videos/side-display.mp4"
+        ],
+        "shuffle": false
+    }
 }
 ```
-Monitor names come from `xrandr --listmonitors`. Run `xrandr --listmonitors` to see yours.
+Monitor names come from `xrandr --listmonitors`. Run `xrandr --listmonitors` to see yours. Legacy string values such as `"HDMI-0": "/home/user/Videos/splash.mp4"` are still accepted.
 
 ---
 

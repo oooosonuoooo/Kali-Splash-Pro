@@ -1,3 +1,16 @@
 {
-    "HDMI-0": "/home/user/Videos/splash.mp4"
+    "HDMI-0": {
+        "videos": [
+            "/home/user/Videos/splash1.mp4",
+            "/home/user/Videos/splash2.mkv",
+            "/home/user/Videos/splash3.webm"
+        ],
+        "shuffle": true
+    },
+    "DP-1": {
+        "videos": [
+            "/home/user/Videos/second-monitor.mp4"
+        ],
+        "shuffle": false
+    }
 }

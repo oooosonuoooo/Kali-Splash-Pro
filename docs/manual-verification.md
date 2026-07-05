@@ -39,10 +39,12 @@ Expected:
 
 - Window opens without terminal traceback.
 - Monitor list appears.
+- Add, remove, clear, and reorder playlist items for a monitor.
+- Shuffle checkbox saves to `config.json`.
 - Dependency chips are green for installed tools.
 - Enable/Disable Autostart updates status.
 - View Logs opens and refreshes cleanly.
-- Preview launches mpv for a configured video.
+- Preview launches mpv for the selected playlist item, or a playlist pick if none is selected.
 
 ## Player Smoke Test
 
@@ -52,7 +54,7 @@ python3 src/player.py
 
 Expected:
 
-- One mpv instance opens per configured monitor.
+- One selected video opens per configured monitor.
 - Video is fullscreen and on top.
 - The player exits after playback.
 - `splash_debug.log` records start, display readiness, launches, and finish.
@@ -61,5 +63,5 @@ Expected:
 
 1. Enable autostart in the Manager.
 2. Reboot into Kali XFCE/X11.
-3. Confirm the configured video plays once at session startup.
+3. Confirm one configured video plays per monitor at session startup.
 4. Run `./check.sh` after login and confirm no warnings.

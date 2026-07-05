@@ -12,10 +12,16 @@ from tkinter import filedialog, messagebox, scrolledtext
 import subprocess
 import os
 import json
+import random
 import shlex
 import shutil
 import sys
 import threading
+
+try:
+    from .player import normalize_monitor_config
+except ImportError:
+    from player import normalize_monitor_config
 
 # ---------------------------------------------------------------------------
 # PATHS — always resolved from this file's real location
@@ -82,6 +88,15 @@ def save_config(data: dict) -> bool:
     except OSError as e:
         messagebox.showerror("Save Error", f"Failed to save config:\n{e}")
         return False
+
+
+def config_has_any_videos(data: dict) -> bool:
+    if not isinstance(data, dict):
+        return False
+    for value in data.values():
+        if normalize_monitor_config(value)["videos"]:
+            return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -237,12 +252,12 @@ class KaliSplashManager:
     def __init__(self, root: tk.Tk):
         self.root = root
         self.root.title("Kali Splash Pro")
-        self.root.geometry("720x620")
+        self.root.geometry("860x760")
         self.root.configure(bg=BG)
         self.root.resizable(True, True)
-        self.root.minsize(640, 560)
+        self.root.minsize(760, 680)
 
-        self._monitor_vars: dict[str, tk.StringVar] = {}
+        self._monitor_states: dict[str, dict] = {}
         self._preview_proc = None
 
         self._load_icon()
@@ -351,35 +366,88 @@ class KaliSplashManager:
     def _populate_monitors(self):
         for w in self._monitor_frame.winfo_children():
             w.destroy()
-        self._monitor_vars.clear()
+        self._monitor_states.clear()
 
         conf     = load_config()
         monitors = get_monitors()
 
         for mon in monitors:
-            row = tk.Frame(self._monitor_frame, bg=BG2, pady=6, padx=10)
-            row.pack(fill="x", pady=3)
+            row = tk.Frame(self._monitor_frame, bg=BG2, pady=8, padx=10)
+            row.pack(fill="x", pady=4)
 
-            tk.Label(row, text=f"  {mon}", bg=BG2, fg=FG,
-                     font=("Monospace", 10, "bold"), width=12, anchor="w").pack(side="left")
+            normalized = normalize_monitor_config(conf.get(mon, ""))
+            shuffle_var = tk.BooleanVar(value=normalized["shuffle"])
 
-            var = tk.StringVar(value=conf.get(mon, ""))
-            self._monitor_vars[mon] = var
+            top = tk.Frame(row, bg=BG2)
+            top.pack(fill="x")
 
-            entry = tk.Entry(row, textvariable=var, bg=BG3, fg=FG,
-                             insertbackground=FG, borderwidth=0,
-                             font=("Monospace", 9))
-            entry.pack(side="left", fill="x", expand=True, padx=8)
+            tk.Label(top, text=f"  {mon}", bg=BG2, fg=FG,
+                     font=("Monospace", 10, "bold"), width=14, anchor="w").pack(side="left")
 
-            tk.Button(row, text="📂 Browse",
-                      command=lambda m=mon, v=var: self._browse(m, v),
-                      bg=BG3, fg=FG, relief="flat", padx=6, cursor="hand2",
-                      font=("Sans Serif", 9)).pack(side="left", padx=2)
+            tk.Checkbutton(top, text="Shuffle", variable=shuffle_var,
+                           bg=BG2, fg=FG, selectcolor=BG3,
+                           activebackground=BG2, activeforeground=FG,
+                           font=("Sans Serif", 9), cursor="hand2").pack(side="right")
 
-            tk.Button(row, text="▶ Preview",
-                      command=lambda v=var: self._preview(v),
-                      bg=ACCENT2, fg=FG, relief="flat", padx=6, cursor="hand2",
-                      font=("Sans Serif", 9)).pack(side="left", padx=2)
+            body = tk.Frame(row, bg=BG2)
+            body.pack(fill="x", pady=(6, 0))
+
+            list_wrap = tk.Frame(body, bg=BG3)
+            list_wrap.pack(side="left", fill="both", expand=True, padx=(0, 8))
+
+            listbox = tk.Listbox(
+                list_wrap,
+                height=4,
+                selectmode="extended",
+                exportselection=False,
+                bg=BG3,
+                fg=FG,
+                selectbackground=ACCENT2,
+                selectforeground=FG,
+                borderwidth=0,
+                highlightthickness=0,
+                font=("Monospace", 9),
+            )
+            scrollbar = tk.Scrollbar(list_wrap, orient="vertical", command=listbox.yview)
+            listbox.configure(yscrollcommand=scrollbar.set)
+            listbox.pack(side="left", fill="both", expand=True, padx=4, pady=4)
+            scrollbar.pack(side="right", fill="y")
+
+            for path in normalized["videos"]:
+                listbox.insert("end", path)
+
+            self._monitor_states[mon] = {
+                "listbox": listbox,
+                "shuffle": shuffle_var,
+            }
+
+            buttons = tk.Frame(body, bg=BG2)
+            buttons.pack(side="left", fill="y")
+
+            tk.Button(buttons, text="📂 Add",
+                      command=lambda m=mon: self._add_videos(m),
+                      bg=BG3, fg=FG, relief="flat", padx=8, cursor="hand2",
+                      font=("Sans Serif", 9)).pack(fill="x", pady=1)
+            tk.Button(buttons, text="▶ Preview",
+                      command=lambda m=mon: self._preview_playlist(m),
+                      bg=ACCENT2, fg=FG, relief="flat", padx=8, cursor="hand2",
+                      font=("Sans Serif", 9)).pack(fill="x", pady=1)
+            tk.Button(buttons, text="↑ Up",
+                      command=lambda m=mon: self._move_selected(m, -1),
+                      bg=BG3, fg=FG, relief="flat", padx=8, cursor="hand2",
+                      font=("Sans Serif", 9)).pack(fill="x", pady=1)
+            tk.Button(buttons, text="↓ Down",
+                      command=lambda m=mon: self._move_selected(m, 1),
+                      bg=BG3, fg=FG, relief="flat", padx=8, cursor="hand2",
+                      font=("Sans Serif", 9)).pack(fill="x", pady=1)
+            tk.Button(buttons, text="Remove",
+                      command=lambda m=mon: self._remove_selected(m),
+                      bg="#7f1d1d", fg=FG, relief="flat", padx=8, cursor="hand2",
+                      font=("Sans Serif", 9)).pack(fill="x", pady=1)
+            tk.Button(buttons, text="Clear",
+                      command=lambda m=mon: self._clear_playlist(m),
+                      bg="#7f1d1d", fg=FG, relief="flat", padx=8, cursor="hand2",
+                      font=("Sans Serif", 9)).pack(fill="x", pady=1)
 
         # Save button
         tk.Button(self._monitor_frame, text="💾  Save Config",
@@ -452,30 +520,116 @@ class KaliSplashManager:
         self._toggle_btn.pack(side="right")
 
     # ---------------------------------------------------------------- actions
-    def _browse(self, mon: str, var: tk.StringVar):
-        path = filedialog.askopenfilename(
-            title=f"Select video for {mon}",
+    def _playlist_for_monitor(self, mon: str) -> list[str]:
+        state = self._monitor_states[mon]
+        listbox = state["listbox"]
+        return [
+            listbox.get(idx).strip()
+            for idx in range(listbox.size())
+            if listbox.get(idx).strip()
+        ]
+
+    def _add_videos(self, mon: str):
+        paths = filedialog.askopenfilenames(
+            title=f"Add videos for {mon}",
             filetypes=[("Video files", "*.mp4 *.mkv *.avi *.webm *.mov"),
                        ("All files", "*.*")],
         )
-        if path:
-            var.set(path)
+        if not paths:
+            return
+        listbox = self._monitor_states[mon]["listbox"]
+        for path in paths:
+            listbox.insert("end", path)
+
+    def _remove_selected(self, mon: str):
+        listbox = self._monitor_states[mon]["listbox"]
+        selected = list(listbox.curselection())
+        if not selected:
+            messagebox.showwarning("No Selection", "Select a playlist item to remove.")
+            return
+        for idx in reversed(selected):
+            listbox.delete(idx)
+
+    def _clear_playlist(self, mon: str):
+        self._monitor_states[mon]["listbox"].delete(0, "end")
+
+    def _move_selected(self, mon: str, delta: int):
+        listbox = self._monitor_states[mon]["listbox"]
+        selected = list(listbox.curselection())
+        if not selected:
+            messagebox.showwarning("No Selection", "Select a playlist item to move.")
+            return
+        if delta < 0 and selected[0] == 0:
+            return
+        if delta > 0 and selected[-1] == listbox.size() - 1:
+            return
+
+        iterator = selected if delta < 0 else reversed(selected)
+        for idx in iterator:
+            item = listbox.get(idx)
+            listbox.delete(idx)
+            listbox.insert(idx + delta, item)
+
+        listbox.selection_clear(0, "end")
+        for idx in selected:
+            listbox.selection_set(idx + delta)
+        listbox.activate(selected[0] + delta)
 
     def _save_all(self):
         cfg = load_config()
-        for mon, var in self._monitor_vars.items():
-            val = var.get().strip()
-            if val:
-                cfg[mon] = val
+        for mon, state in self._monitor_states.items():
+            videos = self._playlist_for_monitor(mon)
+            missing = [path for path in videos if not os.path.exists(path)]
+            if missing:
+                messagebox.showerror(
+                    "Missing Video",
+                    f"{mon} has a playlist item that does not exist:\n{missing[0]}",
+                )
+                return False
+
+            if videos:
+                cfg[mon] = {
+                    "videos": videos,
+                    "shuffle": bool(state["shuffle"].get()),
+                }
             elif mon in cfg:
                 del cfg[mon]
+
         if save_config(cfg):
             self._show_toast("Config saved ✔")
+            self._refresh_status()
+            return True
+        return False
 
-    def _preview(self, var: tk.StringVar):
-        path = var.get().strip()
+    def _preview_playlist(self, mon: str):
+        state = self._monitor_states[mon]
+        listbox = state["listbox"]
+        selected = list(listbox.curselection())
+
+        if selected:
+            path = listbox.get(selected[0]).strip()
+            if not path:
+                messagebox.showwarning("No Video", "Selected playlist item is empty.")
+                return
+            if not os.path.exists(path):
+                messagebox.showerror("Not Found", f"Selected file not found:\n{path}")
+                return
+        else:
+            playlist = self._playlist_for_monitor(mon)
+            if not playlist:
+                messagebox.showwarning("Empty Playlist", f"No videos are configured for {mon}.")
+                return
+            valid = [path for path in playlist if os.path.exists(path)]
+            if not valid:
+                messagebox.showerror("No Valid Videos", f"No playlist files exist for {mon}.")
+                return
+            path = random.choice(valid) if state["shuffle"].get() else valid[0]
+
+        self._launch_preview(path)
+
+    def _launch_preview(self, path: str):
         if not path:
-            messagebox.showwarning("No Video", "No video path set for this monitor.")
+            messagebox.showwarning("No Video", "No video path selected.")
             return
         if not os.path.exists(path):
             messagebox.showerror("Not Found", f"File not found:\n{path}")
@@ -506,7 +660,8 @@ class KaliSplashManager:
                 self._show_toast("Autostart disabled.")
         else:
             # Save current config first
-            self._save_all()
+            if not self._save_all():
+                return
             if enable_autostart():
                 self._show_toast("Autostart enabled ✔  — reboot to test.")
         self._refresh_status()
@@ -528,9 +683,9 @@ class KaliSplashManager:
             messagebox.showerror("Missing", f"player.py not found:\n{PLAYER_SCRIPT}")
             return
         cfg = load_config()
-        if not cfg:
+        if not config_has_any_videos(cfg):
             messagebox.showwarning("No Config",
-                "No videos configured. Add a video path first.")
+                "No videos configured. Add videos to a monitor playlist first.")
             return
         try:
             subprocess.Popen(
@@ -590,7 +745,7 @@ class KaliSplashManager:
         enabled = autostart_is_enabled()
         valid   = autostart_path_is_valid() if enabled else False
         cfg     = load_config(show_errors=False)
-        cfg_ok  = bool(cfg)
+        cfg_ok  = config_has_any_videos(cfg)
         deps    = check_deps()
 
         self.root.after(0, self._apply_status, enabled, valid, cfg_ok, deps)

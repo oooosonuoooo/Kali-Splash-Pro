@@ -73,17 +73,45 @@ import sys
 with open(os.environ["CONFIG_PATH"], encoding="utf-8") as f:
     cfg = json.load(f)
 
-for mon, vid in cfg.items():
-    if not isinstance(vid, str):
-        print(f"  \033[31m  [✘]\033[0m  {mon} -> not a string: {vid!r}")
-        sys.exit(1)
-    if os.path.exists(vid):
-        print(f"  \033[32m  [✔]\033[0m  {mon} -> {vid}")
-    else:
-        print(f"  \033[31m  [✘]\033[0m  {mon} -> FILE NOT FOUND: {vid}")
-        sys.exit(1)
+def normalize(value):
+    if isinstance(value, str):
+        return [value.strip()] if value.strip() else []
+    if not isinstance(value, dict):
+        return []
+    videos = value.get("videos", [])
+    if isinstance(videos, str):
+        videos = [videos]
+    if not isinstance(videos, list):
+        return []
+    return [
+        path.strip()
+        for path in videos
+        if isinstance(path, str) and path.strip()
+    ]
+
+ok = True
+configured = False
+for mon, value in cfg.items():
+    videos = normalize(value)
+    if not videos:
+        print(f"  \033[33m  [!]\033[0m  {mon} -> no videos configured")
+        ok = False
+        continue
+    for idx, vid in enumerate(videos, start=1):
+        configured = True
+        if os.path.exists(vid):
+            print(f"  \033[32m  [✔]\033[0m  {mon}[{idx}] -> {vid}")
+        else:
+            print(f"  \033[31m  [✘]\033[0m  {mon}[{idx}] -> FILE NOT FOUND: {vid}")
+            ok = False
+
+if not configured:
+    print("  \033[33m  [!]\033[0m  No videos configured")
+    ok = False
+
+sys.exit(0 if ok else 1)
 PYEOF
-        [[ $? -eq 0 ]] && ok "All video paths exist" || warn "Some video paths are missing"
+        [[ $? -eq 0 ]] && ok "All configured video paths exist" || warn "Some configured video paths are missing or empty"
     else
         fail "config.json is NOT valid JSON"
     fi

@@ -64,6 +64,74 @@ class MonitorParsingTests(unittest.TestCase):
         )
 
 
+class PlayerPlaylistTests(unittest.TestCase):
+    def test_legacy_string_normalizes_to_single_video_without_shuffle(self):
+        self.assertEqual(
+            player.normalize_monitor_config("/tmp/splash.mp4"),
+            {"videos": ["/tmp/splash.mp4"], "shuffle": False},
+        )
+
+    def test_playlist_dict_normalizes_videos_and_shuffle(self):
+        self.assertEqual(
+            player.normalize_monitor_config({
+                "videos": [" /tmp/one.mp4 ", "/tmp/two.mkv", 12, ""],
+                "shuffle": True,
+            }),
+            {"videos": ["/tmp/one.mp4", "/tmp/two.mkv"], "shuffle": True},
+        )
+
+    def test_shuffle_true_uses_random_choice_from_valid_videos(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            first = Path(tmp) / "one.mp4"
+            second = Path(tmp) / "two.mp4"
+            first.touch()
+            second.touch()
+            config = {"videos": [str(first), str(second)], "shuffle": True}
+
+            with mock.patch.object(player.random, "choice", return_value=str(second)) as choice:
+                self.assertEqual(
+                    player.choose_video_for_monitor("HDMI-0", config),
+                    str(second),
+                )
+                choice.assert_called_once_with([str(first), str(second)])
+
+    def test_shuffle_false_chooses_first_valid_video(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            first = Path(tmp) / "one.mp4"
+            second = Path(tmp) / "two.mp4"
+            first.touch()
+            second.touch()
+            config = {"videos": [str(first), str(second)], "shuffle": False}
+
+            self.assertEqual(
+                player.choose_video_for_monitor("HDMI-0", config),
+                str(first),
+            )
+
+    def test_missing_files_are_ignored(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = Path(tmp) / "missing.mp4"
+            valid = Path(tmp) / "valid.mp4"
+            valid.touch()
+            config = {"videos": [str(missing), str(valid)], "shuffle": False}
+
+            with mock.patch.object(player, "log") as log:
+                self.assertEqual(
+                    player.choose_video_for_monitor("HDMI-0", config),
+                    str(valid),
+                )
+                log.assert_any_call(f"Skipping missing video for HDMI-0: {missing}")
+
+    def test_all_missing_files_return_none(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = Path(tmp) / "missing.mp4"
+            config = {"videos": [str(missing)], "shuffle": False}
+
+            with mock.patch.object(player, "log") as log:
+                self.assertIsNone(player.choose_video_for_monitor("HDMI-0", config))
+                log.assert_any_call("Skipping HDMI-0: no valid videos in playlist.")
+
+
 class PlayerLockTests(unittest.TestCase):
     def test_duplicate_lock_returns_false(self):
         with tempfile.TemporaryDirectory() as tmp:

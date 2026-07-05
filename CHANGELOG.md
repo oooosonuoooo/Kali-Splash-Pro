@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-07-05
+
+- Added per-monitor playlists with optional shuffle in the Manager.
+- Added backward-compatible player config normalization for legacy string paths and new playlist objects.
+- Updated startup selection so each monitor launches only one valid video, choosing randomly when shuffle is enabled.
+- Updated health/install config checks, docs, and example config for playlist support.
+
 ## 2026-07-03
 
 - Fixed autostart validation for repository paths containing spaces.

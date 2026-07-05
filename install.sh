@@ -56,8 +56,16 @@ if not isinstance(data, dict) or not data:
     sys.exit(1)
 
 for value in data.values():
-    if isinstance(value, str) and value:
+    if isinstance(value, str) and value.strip():
         sys.exit(0)
+    if isinstance(value, dict):
+        videos = value.get("videos", [])
+        if isinstance(videos, str):
+            videos = [videos]
+        if isinstance(videos, list):
+            for path in videos:
+                if isinstance(path, str) and path.strip():
+                    sys.exit(0)
 sys.exit(1)
 PYEOF
 }

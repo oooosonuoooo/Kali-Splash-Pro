@@ -10,6 +10,7 @@ Bugs fixed: CPU-burn guard dog, pipe deadlock, fragile xrandr parsing,
 import subprocess
 import os
 import json
+import random
 import time
 import sys
 import signal
@@ -148,6 +149,59 @@ def load_config() -> dict:
     except OSError as e:
         log(f"Config read error: {e}")
         return {}
+
+
+def normalize_monitor_config(value) -> dict:
+    """
+    Convert a legacy string or playlist object into one internal shape.
+    Returns: {"videos": list[str], "shuffle": bool}
+    """
+    if isinstance(value, str):
+        path = value.strip()
+        return {"videos": [path] if path else [], "shuffle": False}
+
+    if not isinstance(value, dict):
+        return {"videos": [], "shuffle": False}
+
+    raw_videos = value.get("videos", [])
+    if isinstance(raw_videos, str):
+        raw_videos = [raw_videos]
+    elif not isinstance(raw_videos, list):
+        raw_videos = []
+
+    videos = []
+    for path in raw_videos:
+        if isinstance(path, str) and path.strip():
+            videos.append(path.strip())
+
+    return {
+        "videos": videos,
+        "shuffle": bool(value.get("shuffle", False)),
+    }
+
+
+def choose_video_for_monitor(monitor_name: str, config_value) -> str | None:
+    """Return the one video this run should play for a monitor, or None."""
+    monitor_config = normalize_monitor_config(config_value)
+    videos = monitor_config["videos"]
+    if not videos:
+        log(f"Skipping {monitor_name}: playlist is empty.")
+        return None
+
+    valid_videos = []
+    for path in videos:
+        if os.path.exists(path):
+            valid_videos.append(path)
+        else:
+            log(f"Skipping missing video for {monitor_name}: {path}")
+
+    if not valid_videos:
+        log(f"Skipping {monitor_name}: no valid videos in playlist.")
+        return None
+
+    if monitor_config["shuffle"]:
+        return random.choice(valid_videos)
+    return valid_videos[0]
 
 
 # ---------------------------------------------------------------------------
@@ -298,12 +352,9 @@ def run() -> None:
 
     # --- Launch mpv per monitor ---
     procs = []
-    for mon, vid in config.items():
-        if not isinstance(vid, str):
-            log(f"Skipping {mon}: video path is not a string.")
-            continue
-        if not os.path.exists(vid):
-            log(f"Skipping {mon}: video not found: {vid}")
+    for mon, monitor_config in config.items():
+        vid = choose_video_for_monitor(mon, monitor_config)
+        if not vid:
             continue
 
         idx = indices.get(mon, "0")
