@@ -55,6 +55,7 @@ FG_DIM    = "#9ca3af"
 FONT_HEAD = ("Sans Serif", 22, "bold")
 FONT_SUB  = ("Sans Serif", 11)
 FONT_MONO = ("Monospace", 9)
+VIDEO_FILE_PATTERNS = "*.mp4 *.mkv *.avi *.webm *.mov *.MP4 *.MKV *.AVI *.WEBM *.MOV"
 
 # ---------------------------------------------------------------------------
 # CONFIG HELPERS
@@ -97,6 +98,47 @@ def config_has_any_videos(data: dict) -> bool:
         if normalize_monitor_config(value)["videos"]:
             return True
     return False
+
+
+def select_video_files(title: str) -> list[str]:
+    """
+    Open a multi-select video picker.
+    Prefer zenity's GTK dialog on Linux because some Tk file dialogs expose
+    awkward or unreliable multi-select behavior on desktop themes.
+    """
+    if shutil.which("zenity"):
+        try:
+            result = subprocess.run(
+                [
+                    "zenity",
+                    "--file-selection",
+                    "--multiple",
+                    "--separator=\n",
+                    f"--title={title}",
+                    f"--file-filter=Video files | {VIDEO_FILE_PATTERNS}",
+                    "--file-filter=All files | *",
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+            )
+        except OSError:
+            result = None
+
+        if result is not None:
+            if result.returncode == 0:
+                return [
+                    path.strip()
+                    for path in result.stdout.splitlines()
+                    if path.strip()
+                ]
+            return []
+
+    return list(filedialog.askopenfilenames(
+        title=title,
+        filetypes=[("Video files", VIDEO_FILE_PATTERNS),
+                   ("All files", "*.*")],
+    ))
 
 
 # ---------------------------------------------------------------------------
@@ -530,11 +572,7 @@ class KaliSplashManager:
         ]
 
     def _add_videos(self, mon: str):
-        paths = filedialog.askopenfilenames(
-            title=f"Add videos for {mon}",
-            filetypes=[("Video files", "*.mp4 *.mkv *.avi *.webm *.mov"),
-                       ("All files", "*.*")],
-        )
+        paths = select_video_files(f"Add videos for {mon}")
         if not paths:
             return
         listbox = self._monitor_states[mon]["listbox"]

@@ -53,6 +53,43 @@ class DesktopExecParsingTests(unittest.TestCase):
                     self.assertFalse(manager.autostart_path_is_valid())
 
 
+class ManagerFilePickerTests(unittest.TestCase):
+    def test_zenity_multi_select_output_is_split_into_paths(self):
+        result = mock.Mock(returncode=0, stdout="/tmp/one.mp4\n/tmp/two.MP4\n")
+
+        with mock.patch.object(manager.shutil, "which", return_value="/usr/bin/zenity"):
+            with mock.patch.object(manager.subprocess, "run", return_value=result) as run:
+                self.assertEqual(
+                    manager.select_video_files("Add videos"),
+                    ["/tmp/one.mp4", "/tmp/two.MP4"],
+                )
+                args = run.call_args.args[0]
+                self.assertIn("--multiple", args)
+                self.assertIn("--separator=\n", args)
+
+    def test_zenity_cancel_returns_empty_list_without_tk_fallback(self):
+        result = mock.Mock(returncode=1, stdout="")
+
+        with mock.patch.object(manager.shutil, "which", return_value="/usr/bin/zenity"):
+            with mock.patch.object(manager.subprocess, "run", return_value=result):
+                with mock.patch.object(manager.filedialog, "askopenfilenames") as fallback:
+                    self.assertEqual(manager.select_video_files("Add videos"), [])
+                    fallback.assert_not_called()
+
+    def test_file_picker_uses_tk_fallback_without_zenity(self):
+        with mock.patch.object(manager.shutil, "which", return_value=None):
+            with mock.patch.object(
+                manager.filedialog,
+                "askopenfilenames",
+                return_value=("/tmp/one.mp4", "/tmp/two.mp4"),
+            ) as fallback:
+                self.assertEqual(
+                    manager.select_video_files("Add videos"),
+                    ["/tmp/one.mp4", "/tmp/two.mp4"],
+                )
+                fallback.assert_called_once()
+
+
 class MonitorParsingTests(unittest.TestCase):
     def test_manager_parses_xrandr_monitor_names(self):
         self.assertEqual(manager.parse_xrandr_monitors(XRANDR_OUTPUT), ["HDMI-0", "DP-1"])
