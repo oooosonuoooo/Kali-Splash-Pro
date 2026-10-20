@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-10-20
+
+- Added folder import for all supported video files, with no item limit and automatic scrolling to newly added entries.
+- Expanded case-insensitive video extension filtering and kept playlist saves working when older paths are unavailable.
+- Unified Preview and startup mpv GPU rendering and automatic hardware decoding settings.
+- Reduced startup guard polling and stopped repeatedly spawning window-focus commands during playback.
+- Added one-click NVIDIA H.264 cache optimization for smooth hardware-decoded playback while preserving original videos and playlist paths.
+
 ## 2026-07-05
 
 - Added per-monitor playlists with optional shuffle in the Manager.

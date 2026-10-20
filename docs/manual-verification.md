@@ -46,6 +46,15 @@ Expected:
 - View Logs opens and refreshes cleanly.
 - Preview launches mpv for the selected playlist item, or a playlist pick if none is selected.
 
+### Folder import and playlist persistence
+
+- Select **Add Folder** for a folder containing more than nine supported videos, including names with spaces and mixed-case extensions.
+- Confirm every direct child video appears in the playlist and the view scrolls to the last new entry.
+- Save with an old unavailable path still present; confirm the new entries save and the unavailable path is retained with a status message.
+- Preview representative hardware-decoded and software-decoded video formats and confirm the mpv GPU output initializes.
+- Click **Optimize for GPU** for AV1 entries; confirm copies appear in `~/.cache/kali-splash-pro/h264/` and the source files remain unchanged.
+- Preview an optimized clip and confirm mpv reports NVDEC hardware decoding; startup should prefer the optimized copy while it exists.
+
 ## Player Smoke Test
 
 ```bash

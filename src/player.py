@@ -16,6 +16,8 @@ import sys
 import signal
 import datetime
 import fcntl
+import hashlib
+import shutil
 import tempfile
 
 # ---------------------------------------------------------------------------
@@ -26,6 +28,11 @@ PROJECT_ROOT = os.path.dirname(CURRENT_DIR)
 CONFIG_FILE  = os.path.join(PROJECT_ROOT, "config.json")
 LOG_FILE     = os.path.join(PROJECT_ROOT, "splash_debug.log")
 LOCK_FILE    = os.path.join(tempfile.gettempdir(), "kali-splash.lock")
+CACHE_ROOT   = os.environ.get(
+    "XDG_CACHE_HOME", os.path.join(os.path.expanduser("~"), ".cache")
+)
+VIDEO_CACHE_DIR = os.path.join(CACHE_ROOT, "kali-splash-pro", "h264")
+_H264_NVENC_AVAILABLE: bool | None = None
 
 # ---------------------------------------------------------------------------
 # LOG — rotating append, keeps last 500 lines max
@@ -180,6 +187,100 @@ def normalize_monitor_config(value) -> dict:
     }
 
 
+def optimized_video_cache_path(video_path: str) -> str:
+    """Return the cache path tied to this source file's location and contents."""
+    source = os.path.abspath(os.path.expanduser(video_path))
+    stat = os.stat(source)
+    fingerprint = hashlib.sha256(
+        f"{source}\0{stat.st_size}\0{stat.st_mtime_ns}".encode("utf-8")
+    ).hexdigest()
+    return os.path.join(VIDEO_CACHE_DIR, f"{fingerprint}.mp4")
+
+
+def resolve_playback_path(video_path: str) -> str:
+    """Prefer an optimized hardware-decodable cache copy when one is ready."""
+    try:
+        cached = optimized_video_cache_path(video_path)
+        if os.path.isfile(cached) and os.path.getsize(cached) > 0:
+            return cached
+    except OSError:
+        pass
+    return video_path
+
+
+def optimize_video_for_gpu(video_path: str) -> str:
+    """Create a source-preserving H.264/NVENC copy for smooth NVDEC playback."""
+    global _H264_NVENC_AVAILABLE
+    source = os.path.abspath(os.path.expanduser(video_path))
+    if not os.path.isfile(source):
+        raise FileNotFoundError(source)
+
+    ffmpeg = shutil.which("ffmpeg")
+    ffprobe = shutil.which("ffprobe")
+    if not ffmpeg or not ffprobe:
+        raise RuntimeError("ffmpeg and ffprobe are required for GPU optimization")
+
+    probe = subprocess.run(
+        [ffprobe, "-v", "error", "-select_streams", "v:0",
+         "-show_entries", "stream=codec_name", "-of", "default=nw=1:nk=1", source],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=20,
+    )
+    if probe.returncode:
+        raise RuntimeError(probe.stderr.strip() or "Could not inspect video codec")
+    if probe.stdout.strip().splitlines()[:1] == ["h264"]:
+        return source
+
+    if _H264_NVENC_AVAILABLE is None:
+        encoders = subprocess.run(
+            [ffmpeg, "-hide_banner", "-encoders"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=20,
+        )
+        _H264_NVENC_AVAILABLE = (
+            encoders.returncode == 0 and "h264_nvenc" in encoders.stdout
+        )
+    if not _H264_NVENC_AVAILABLE:
+        raise RuntimeError("This FFmpeg build does not provide the NVIDIA H.264 encoder")
+
+    target = optimized_video_cache_path(source)
+    if os.path.isfile(target) and os.path.getsize(target) > 0:
+        return target
+
+    os.makedirs(os.path.dirname(target), exist_ok=True)
+    temporary = target[:-4] + ".partial.mp4"
+    command = [
+        ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+        "-threads", "2", "-i", source,
+        "-map", "0:v:0", "-map", "0:a?", "-map_metadata", "0",
+        "-c:v", "h264_nvenc", "-preset", "p4", "-tune", "hq",
+        "-rc:v", "vbr", "-cq:v", "20", "-b:v", "0",
+        "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "160k",
+        "-movflags", "+faststart", "-f", "mp4", temporary,
+    ]
+    nice = shutil.which("nice")
+    if nice:
+        command = [nice, "-n", "10", *command]
+    ionice = shutil.which("ionice")
+    if ionice:
+        command = [ionice, "-c", "3", "--", *command]
+
+    try:
+        result = subprocess.run(
+            command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, timeout=None,
+        )
+        if result.returncode:
+            raise RuntimeError(result.stderr.strip()[-1200:] or "FFmpeg encode failed")
+        if not os.path.isfile(temporary) or os.path.getsize(temporary) == 0:
+            raise RuntimeError("FFmpeg did not produce a non-empty optimized video")
+        os.replace(temporary, target)
+    finally:
+        try:
+            os.remove(temporary)
+        except FileNotFoundError:
+            pass
+    return target
+
+
 def choose_video_for_monitor(monitor_name: str, config_value) -> str | None:
     """Return the one video this run should play for a monitor, or None."""
     monitor_config = normalize_monitor_config(config_value)
@@ -242,9 +343,35 @@ def get_monitor_indices() -> dict:
 # ---------------------------------------------------------------------------
 # GUARD DOG — smarter, low-CPU version
 # ---------------------------------------------------------------------------
-GUARD_INITIAL_INTERVAL  = 0.05   # fast for the first few seconds
+GUARD_INITIAL_INTERVAL  = 0.25   # brief startup polling, with low idle overhead
 GUARD_INITIAL_DURATION  = 5.0    # seconds of fast polling at start
-GUARD_NORMAL_INTERVAL   = 0.5    # then back off to 0.5 s
+GUARD_NORMAL_INTERVAL   = 1.0    # then back off to one check per second
+
+
+def build_mpv_command(video_path: str, screen_index: str | None = None) -> list[str]:
+    """Build a shared GPU-backed mpv command for startup and preview playback."""
+    cmd = [
+        "mpv",
+        "--vo=gpu",
+        "--gpu-api=opengl",
+        "--hwdec=auto",
+        "--panscan=1.0",
+        "--ontop",
+        "--no-border",
+        "--no-osc",
+        "--no-input-default-bindings",
+        "--input-vo-keyboard=no",
+        "--input-media-keys=no",
+        "--x11-bypass-compositor=yes",
+        "--force-window=immediate",
+        "--keep-open=no",
+        "--loop=no",
+        "--fs",
+    ]
+    if screen_index is not None:
+        cmd.append(f"--fs-screen={screen_index}")
+    cmd.append(video_path)
+    return cmd
 
 def guard_dog(procs: list) -> None:
     """
@@ -254,6 +381,7 @@ def guard_dog(procs: list) -> None:
     """
     log("Guard Dog engaged.")
     start_time = time.monotonic()
+    windows_raised = False
 
     try:
         while any(p.poll() is None for p in procs):
@@ -261,23 +389,23 @@ def guard_dog(procs: list) -> None:
             interval = (GUARD_INITIAL_INTERVAL if elapsed < GUARD_INITIAL_DURATION
                         else GUARD_NORMAL_INTERVAL)
 
-            # Only call xdotool when mpv windows actually exist
-            try:
-                result = subprocess.run(
-                    ["xdotool", "search", "--class", "mpv"],
-                    capture_output=True, timeout=2,
-                )
-                if result.returncode == 0 and result.stdout.strip():
-                    subprocess.run(
-                        ["xdotool", "search", "--class", "mpv", "windowraise"],
+            # mpv already stays on top. Raise its windows once, then only poll
+            # child processes so long splash videos do not spawn xdotool in a loop.
+            if not windows_raised:
+                try:
+                    result = subprocess.run(
+                        ["xdotool", "search", "--class", "mpv"],
                         capture_output=True, timeout=2,
                     )
-                    subprocess.run(
-                        ["xdotool", "search", "--class", "mpv", "windowactivate"],
-                        capture_output=True, timeout=2,
-                    )
-            except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as e:
-                log(f"Guard Dog xdotool error: {e}")
+                    if result.returncode == 0 and result.stdout.strip():
+                        windows_raised = True
+                        for action in ("windowraise", "windowactivate"):
+                            subprocess.run(
+                                ["xdotool", "search", "--class", "mpv", action],
+                                capture_output=True, timeout=2,
+                            )
+                except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as e:
+                    log(f"Guard Dog xdotool error: {e}")
 
             time.sleep(interval)
 
@@ -325,12 +453,10 @@ def run() -> None:
 
     log("=== KALI SPLASH PRO START ===")
 
-    # --- Duplicate guard ---
     if not acquire_lock():
         log("Another instance is already running — exiting.")
         return
 
-    # --- Signal handlers ---
     signal.signal(signal.SIGTERM, cleanup_handler)
     signal.signal(signal.SIGINT,  cleanup_handler)
 
@@ -358,28 +484,12 @@ def run() -> None:
             continue
 
         idx = indices.get(mon, "0")
-        log(f"Launching on {mon} (screen {idx}): {vid}")
+        playback_path = resolve_playback_path(vid)
+        if playback_path != vid:
+            log(f"Using GPU-optimized cache for {vid}")
+        log(f"Launching on {mon} (screen {idx}): {playback_path}")
 
-        cmd = [
-            "mpv",
-            "--fs",
-            f"--fs-screen={idx}",
-            "--vo=gpu",
-            "--gpu-api=opengl",   # OpenGL for broadest compatibility
-            "--hwdec=auto",        # hardware decoding when available
-            "--panscan=1.0",
-            "--ontop",
-            "--no-border",
-            "--no-osc",
-            "--no-input-default-bindings",
-            "--input-vo-keyboard=no",
-            "--input-media-keys=no",
-            "--x11-bypass-compositor=yes",
-            "--force-window=immediate",
-            "--keep-open=no",
-            "--loop=no",
-            vid,
-        ]
+        cmd = build_mpv_command(playback_path, idx)
         try:
             p = subprocess.Popen(
                 cmd,

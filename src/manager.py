@@ -19,9 +19,15 @@ import sys
 import threading
 
 try:
-    from .player import normalize_monitor_config
+    from .player import (
+        build_mpv_command, normalize_monitor_config, optimize_video_for_gpu,
+        resolve_playback_path,
+    )
 except ImportError:
-    from player import normalize_monitor_config
+    from player import (
+        build_mpv_command, normalize_monitor_config, optimize_video_for_gpu,
+        resolve_playback_path,
+    )
 
 # ---------------------------------------------------------------------------
 # PATHS — always resolved from this file's real location
@@ -55,7 +61,27 @@ FG_DIM    = "#9ca3af"
 FONT_HEAD = ("Sans Serif", 22, "bold")
 FONT_SUB  = ("Sans Serif", 11)
 FONT_MONO = ("Monospace", 9)
-VIDEO_FILE_PATTERNS = "*.mp4 *.mkv *.avi *.webm *.mov *.MP4 *.MKV *.AVI *.WEBM *.MOV"
+SUPPORTED_VIDEO_EXTENSIONS = frozenset({
+    ".264", ".265", ".3g2", ".3gp", ".asf", ".avi", ".divx", ".f4v",
+    ".flv", ".h264", ".h265", ".hevc", ".ivf", ".m2t", ".m2ts", ".m2v",
+    ".m4v", ".mkv", ".mov", ".mp4", ".mpe", ".mpeg", ".mpg", ".mts",
+    ".mxf", ".nut", ".ogv", ".rm", ".rmvb", ".ts", ".vob", ".webm",
+    ".wmv", ".y4m",
+})
+
+
+def _case_insensitive_glob(extension: str) -> str:
+    return "*" + "".join(
+        f"[{character.lower()}{character.upper()}]" if character.isalpha()
+        else character
+        for character in extension
+    )
+
+
+VIDEO_FILE_PATTERNS = " ".join(
+    _case_insensitive_glob(extension)
+    for extension in sorted(SUPPORTED_VIDEO_EXTENSIONS)
+)
 
 # ---------------------------------------------------------------------------
 # CONFIG HELPERS
@@ -100,6 +126,18 @@ def config_has_any_videos(data: dict) -> bool:
     return False
 
 
+def list_video_files(folder: str) -> list[str]:
+    """Return every supported video directly inside a folder, without a count limit."""
+    with os.scandir(folder) as entries:
+        paths = [
+            entry.path
+            for entry in entries
+            if entry.is_file()
+            and os.path.splitext(entry.name)[1].casefold() in SUPPORTED_VIDEO_EXTENSIONS
+        ]
+    return sorted(paths, key=lambda path: (os.path.basename(path).casefold(), path))
+
+
 def select_video_files(title: str) -> list[str]:
     """
     Open a multi-select video picker.
@@ -136,7 +174,7 @@ def select_video_files(title: str) -> list[str]:
 
     return list(filedialog.askopenfilenames(
         title=title,
-        filetypes=[("Video files", VIDEO_FILE_PATTERNS),
+        filetypes=[("Video files", VIDEO_FILE_PATTERNS.split()),
                    ("All files", "*.*")],
     ))
 
@@ -301,6 +339,7 @@ class KaliSplashManager:
 
         self._monitor_states: dict[str, dict] = {}
         self._preview_proc = None
+        self._optimization_active = False
 
         self._load_icon()
         self._build_header()
@@ -470,6 +509,14 @@ class KaliSplashManager:
                       command=lambda m=mon: self._add_videos(m),
                       bg=BG3, fg=FG, relief="flat", padx=8, cursor="hand2",
                       font=("Sans Serif", 9)).pack(fill="x", pady=1)
+            tk.Button(buttons, text="📁 Add Folder",
+                      command=lambda m=mon: self._add_video_folder(m),
+                      bg=BG3, fg=FG, relief="flat", padx=8, cursor="hand2",
+                      font=("Sans Serif", 9)).pack(fill="x", pady=1)
+            tk.Button(buttons, text="⚡ Optimize for GPU",
+                      command=lambda m=mon: self._optimize_playlist(m),
+                      bg=BG3, fg=FG, relief="flat", padx=4, cursor="hand2",
+                      font=("Sans Serif", 9)).pack(fill="x", pady=1)
             tk.Button(buttons, text="▶ Preview",
                       command=lambda m=mon: self._preview_playlist(m),
                       bg=ACCENT2, fg=FG, relief="flat", padx=8, cursor="hand2",
@@ -575,9 +622,129 @@ class KaliSplashManager:
         paths = select_video_files(f"Add videos for {mon}")
         if not paths:
             return
+        self._append_videos(mon, paths)
+
+    def _add_video_folder(self, mon: str):
+        videos_dir = os.path.join(os.path.expanduser("~"), "Videos")
+        initialdir = videos_dir if os.path.isdir(videos_dir) else os.path.expanduser("~")
+        folder = filedialog.askdirectory(
+            title=f"Add videos from a folder for {mon}",
+            initialdir=initialdir,
+            mustexist=True,
+            parent=self.root,
+        )
+        if not folder:
+            return
+        try:
+            paths = list_video_files(folder)
+        except OSError as e:
+            messagebox.showerror("Folder Error", f"Could not read folder:\n{e}")
+            return
+        if not paths:
+            messagebox.showinfo(
+                "No Videos Found",
+                "The selected folder contains no supported video files.",
+            )
+            return
+        self._append_videos(mon, paths)
+
+    def _append_videos(self, mon: str, paths: list[str]) -> int:
         listbox = self._monitor_states[mon]["listbox"]
+        existing = {
+            os.path.normcase(os.path.abspath(listbox.get(idx).strip()))
+            for idx in range(listbox.size())
+            if listbox.get(idx).strip()
+        }
+        added = 0
         for path in paths:
+            path = os.path.abspath(path)
+            key = os.path.normcase(path)
+            if key in existing:
+                continue
             listbox.insert("end", path)
+            existing.add(key)
+            added += 1
+
+        if added:
+            listbox.selection_clear(0, "end")
+            listbox.selection_set(listbox.size() - added, "end")
+            listbox.see("end")
+            self._show_toast(f"Added {added} video(s). Click Save Config.")
+        else:
+            self._show_toast("Those videos are already in the playlist.")
+        return added
+
+    def _optimize_playlist(self, mon: str):
+        if self._optimization_active:
+            self._show_toast("GPU optimization is already running.")
+            return
+        videos = self._playlist_for_monitor(mon)
+        if not videos:
+            messagebox.showwarning("Empty Playlist", f"Add videos to {mon} first.")
+            return
+        if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
+            messagebox.showerror(
+                "FFmpeg Not Found",
+                "Install ffmpeg to create hardware-decodable playback copies.",
+            )
+            return
+
+        self._optimization_active = True
+        self._show_toast(f"Preparing GPU playback copies for {len(videos)} video(s)…")
+        threading.Thread(
+            target=self._optimize_playlist_worker,
+            args=(mon, videos),
+            daemon=True,
+        ).start()
+
+    def _optimize_playlist_worker(self, mon: str, videos: list[str]):
+        optimized = 0
+        compatible = 0
+        failures = []
+        for index, path in enumerate(videos, start=1):
+            try:
+                before = resolve_playback_path(path)
+                result = optimize_video_for_gpu(path)
+                if os.path.abspath(result) == os.path.abspath(path):
+                    compatible += 1
+                elif os.path.abspath(result) == os.path.abspath(before):
+                    compatible += 1
+                else:
+                    optimized += 1
+            except Exception as e:
+                failures.append((path, str(e)))
+
+            try:
+                self.root.after(
+                    0,
+                    lambda i=index, total=len(videos): self._show_toast(
+                        f"GPU optimization {i}/{total}…"
+                    ),
+                )
+            except tk.TclError:
+                return
+
+        summary = (
+            f"GPU copies ready: {optimized} optimized, "
+            f"{compatible} already compatible."
+        )
+        if failures:
+            summary += f" {len(failures)} could not be optimized."
+
+        def finish():
+            self._optimization_active = False
+            if failures:
+                details = "\n".join(
+                    f"• {os.path.basename(path)}: {error[:180]}"
+                    for path, error in failures[:3]
+                )
+                messagebox.showwarning("Some Videos Were Not Optimized", details)
+            self._show_toast(summary)
+
+        try:
+            self.root.after(0, finish)
+        except tk.TclError:
+            self._optimization_active = False
 
     def _remove_selected(self, mon: str):
         listbox = self._monitor_states[mon]["listbox"]
@@ -615,15 +782,11 @@ class KaliSplashManager:
 
     def _save_all(self):
         cfg = load_config()
+        missing_count = 0
         for mon, state in self._monitor_states.items():
             videos = self._playlist_for_monitor(mon)
             missing = [path for path in videos if not os.path.exists(path)]
-            if missing:
-                messagebox.showerror(
-                    "Missing Video",
-                    f"{mon} has a playlist item that does not exist:\n{missing[0]}",
-                )
-                return False
+            missing_count += len(missing)
 
             if videos:
                 cfg[mon] = {
@@ -634,7 +797,12 @@ class KaliSplashManager:
                 del cfg[mon]
 
         if save_config(cfg):
-            self._show_toast("Config saved ✔")
+            if missing_count:
+                self._show_toast(
+                    f"Config saved; kept {missing_count} unavailable path(s)."
+                )
+            else:
+                self._show_toast("Config saved ✔")
             self._refresh_status()
             return True
         return False
@@ -681,8 +849,7 @@ class KaliSplashManager:
         # FIX: use list form — no shell injection
         try:
             self._preview_proc = subprocess.Popen(
-                ["mpv", "--fs", "--panscan=1.0", "--ontop",
-                 "--force-window=immediate", "--no-osc", path],
+                build_mpv_command(resolve_playback_path(path)),
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )

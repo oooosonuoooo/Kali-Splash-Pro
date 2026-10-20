@@ -89,6 +89,103 @@ class ManagerFilePickerTests(unittest.TestCase):
                 )
                 fallback.assert_called_once()
 
+    def test_folder_scan_returns_all_supported_files_case_insensitively(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            names = [f"clip-{index:02}.mkv" for index in range(12)]
+            names += ["special.MP4", "space name.WebM", "extra.3GP"]
+            for name in names:
+                (folder / name).touch()
+            (folder / "readme.txt").touch()
+            nested = folder / "nested"
+            nested.mkdir()
+            (nested / "not-recursive.mp4").touch()
+
+            found = manager.list_video_files(str(folder))
+
+            self.assertEqual(len(found), len(names))
+            self.assertEqual(
+                {Path(path).name for path in found},
+                set(names),
+            )
+
+    def test_append_videos_adds_large_batch_and_scrolls_to_end(self):
+        class FakeListbox:
+            def __init__(self):
+                self.items = []
+                self.last_selection = None
+                self.last_scrolled = None
+
+            def size(self):
+                return len(self.items)
+
+            def get(self, index):
+                return self.items[index]
+
+            def insert(self, index, value):
+                self.items.append(value)
+
+            def selection_clear(self, *_args):
+                pass
+
+            def selection_set(self, start, end):
+                self.last_selection = (start, end)
+
+            def see(self, index):
+                self.last_scrolled = index
+
+        listbox = FakeListbox()
+        manager_state = type("ManagerHarness", (), {})()
+        manager_state._monitor_states = {"HDMI-0": {"listbox": listbox}}
+        manager_state._show_toast = mock.Mock()
+        batch = [f"/tmp/video-{index}.mkv" for index in range(21)]
+
+        added = manager.KaliSplashManager._append_videos(
+            manager_state, "HDMI-0", batch
+        )
+
+        self.assertEqual(added, 21)
+        self.assertEqual(listbox.size(), 21)
+        self.assertEqual(listbox.last_selection, (0, "end"))
+        self.assertEqual(listbox.last_scrolled, "end")
+
+    def test_save_keeps_missing_paths_and_other_playlist_entries(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            existing = Path(tmp) / "available.mp4"
+            existing.touch()
+            missing = str(Path(tmp) / "old-location.mp4")
+
+            class Listbox:
+                def size(self):
+                    return 2
+
+                def get(self, index):
+                    return [missing, str(existing)][index]
+
+            class SaveHarness:
+                _playlist_for_monitor = manager.KaliSplashManager._playlist_for_monitor
+
+                def __init__(self):
+                    self._monitor_states = {
+                        "HDMI-0": {
+                            "listbox": Listbox(),
+                            "shuffle": mock.Mock(get=mock.Mock(return_value=False)),
+                        }
+                    }
+                    self._show_toast = mock.Mock()
+                    self._refresh_status = mock.Mock()
+
+            harness = SaveHarness()
+            with mock.patch.object(manager, "load_config", return_value={}):
+                with mock.patch.object(manager, "save_config", return_value=True) as save:
+                    self.assertTrue(manager.KaliSplashManager._save_all(harness))
+
+            saved = save.call_args.args[0]["HDMI-0"]["videos"]
+            self.assertEqual(saved, [missing, str(existing)])
+            harness._show_toast.assert_called_once_with(
+                "Config saved; kept 1 unavailable path(s)."
+            )
+
 
 class MonitorParsingTests(unittest.TestCase):
     def test_manager_parses_xrandr_monitor_names(self):
@@ -102,6 +199,30 @@ class MonitorParsingTests(unittest.TestCase):
 
 
 class PlayerPlaylistTests(unittest.TestCase):
+    def test_mpv_command_uses_gpu_rendering_and_available_hardware_decode(self):
+        command = player.build_mpv_command("/tmp/my video.mkv", "1")
+
+        self.assertIn("--vo=gpu", command)
+        self.assertIn("--gpu-api=opengl", command)
+        self.assertIn("--hwdec=auto", command)
+        self.assertIn("--fs-screen=1", command)
+        self.assertEqual(command[-1], "/tmp/my video.mkv")
+
+    def test_playback_uses_optimized_copy_when_cached(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "source.mkv"
+            cache = Path(tmp) / "cache"
+            source.touch()
+            with mock.patch.object(player, "VIDEO_CACHE_DIR", str(cache)):
+                self.assertEqual(player.resolve_playback_path(str(source)), str(source))
+                optimized = Path(player.optimized_video_cache_path(str(source)))
+                optimized.parent.mkdir(parents=True)
+                optimized.write_bytes(b"optimized")
+
+                self.assertEqual(
+                    player.resolve_playback_path(str(source)), str(optimized)
+                )
+
     def test_legacy_string_normalizes_to_single_video_without_shuffle(self):
         self.assertEqual(
             player.normalize_monitor_config("/tmp/splash.mp4"),

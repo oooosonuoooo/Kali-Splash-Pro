@@ -50,6 +50,7 @@ Replaces the jarring flicker of a bare XFCE desktop loading with a smooth fullsc
 | `x11-xserver-utils` | `xrandr` monitor detection and `xset` X readiness checks | ✔ via apt |
 
 > **Optional:** Install `python3-pil` (`python3-pillow`) for proper PNG icon support in the manager window.
+> **Optional for smooth playback copies:** Install `ffmpeg` and `ffprobe` and use an NVIDIA GPU with NVENC support. Without these, videos still play directly with mpv's available hardware decoding or software fallback.
 
 **Tested on:** Kali Linux 2024.x / 2025.x, XFCE desktop, X11 session.
 
@@ -102,6 +103,8 @@ The Manager GUI has three main sections:
 ### 🖥 Monitors & Videos
 - Each connected monitor is listed (detected via `xrandr`)
 - Click **📂 Add** to add one or more videos to that monitor's playlist
+- Click **📁 Add Folder** to add every supported video directly inside a folder; there is no item limit, and the list scrolls to the newly added videos
+- Click **⚡ Optimize for GPU** to make cache copies using the NVIDIA encoder for smooth hardware-decoded playback; source videos stay untouched
 - Use **Remove**, **Clear**, **↑ Up**, and **↓ Down** to manage playlist order
 - Enable **Shuffle** when you want a random video picked at login
 - Click **💾 Save Config** to write your playlist choices to `config.json`
@@ -136,15 +139,15 @@ Login → XFCE session starts → Autostart .desktop fires
     → Detects monitors via xrandr
     → Selects one valid video per monitor
     → Launches mpv fullscreen (OpenGL + hardware decode)
-    → Guard Dog: keeps mpv on top for first 5 s (fast), then every 0.5 s
+    → Guard Dog: raises mpv once, then checks process status at a low rate
     → Video ends → mpv exits → player.py exits → desktop appears normally
 ```
 
 ### Key design choices
 - **Autostart `.desktop` file** in `~/.config/autostart/` — the correct XFCE/GNOME mechanism (not `.xsessionrc`, not systemd user services at login)
 - **Lock file** at `/tmp/kali-splash.lock` — prevents duplicate launches if autostart fires twice
-- **Guard Dog** uses adaptive polling: 0.05 s for the first 5 s (beats compositor/taskbar), then backs off to 0.5 s (saves CPU)
-- **mpv** uses OpenGL + hardware decoding for zero-lag playback
+- **Guard Dog** polls four times per second briefly, raises the player window once, then checks once per second
+- **mpv** renders through the GPU and uses hardware decoding when the video codec and GPU support it
 - **All paths** resolved from the script's real location — works regardless of CWD
 
 ---
@@ -153,11 +156,15 @@ Login → XFCE session starts → Autostart .desktop fires
 
 1. Open **Kali Splash Pro** from the menu (or `python3 src/manager.py`)
 2. Find your monitor name (e.g. `HDMI-0`)
-3. Click **📂 Add** → select one or more `.mp4`, `.mkv`, `.avi`, `.webm`, or `.mov` files
+3. Click **📁 Add Folder** to add every supported video from that folder, or click **📂 Add** to choose individual files
 4. Click **💾 Save Config**
 5. Click **🧪 Test Splash Now** to preview it
 
-Supported formats: anything mpv can play (MP4, MKV, AVI, WebM, MOV, etc.)
+The folder scan recognizes common video extensions including MP4, MKV, AVI, WebM, MOV, MPEG, TS, MTS, M2TS, WMV, OGV, and 3GP, without limiting the number of files. The folder scan includes direct child files. mpv can also play additional formats; use **📂 Add** for a format with an uncommon extension.
+
+The player uses GPU rendering and automatic hardware decoding when supported. A GTX 1050 Ti cannot hardware-decode AV1, so unoptimized AV1 clips fall back to CPU decoding while still using GPU rendering. Click **⚡ Optimize for GPU** to create H.264/NVENC copies in the user cache; Preview and startup automatically use a ready copy. Original files and playlist paths stay unchanged. The conversion runs in the background at low CPU and disk priority.
+
+If a saved playlist contains old paths whose files are unavailable, Save Config keeps those entries and still saves the rest of the playlist. The player skips unavailable files when choosing a video.
 
 ---
 
@@ -309,6 +316,7 @@ rm -rf /path/to/Kali-Splash-Pro
 | Login session only | Works only in a full XFCE/X11 session; not at GDM/LightDM level |
 | Folder must stay put | Moving the folder breaks the autostart link (run `install.sh` to repair) |
 | One startup pick per monitor | Playlists choose one video at login; they are not continuous playback queues |
+| Cache disk space | GPU-optimized H.264 copies use additional space under `~/.cache/kali-splash-pro/`; deleting the cache makes the player fall back to the originals |
 | No Wayland guard dog | `xdotool` is unavailable on Wayland |
 | Lock file persistence | If player.py crashes hard, delete `/tmp/kali-splash.lock` manually |
 
