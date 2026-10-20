@@ -258,7 +258,7 @@ def optimize_video_for_gpu(video_path: str) -> str:
     ]
     nice = shutil.which("nice")
     if nice:
-        command = [nice, "-n", "10", *command]
+        command = [nice, "-n", "19", *command]
     ionice = shutil.which("ionice")
     if ionice:
         command = [ionice, "-c", "3", "--", *command]
