@@ -249,7 +249,7 @@ def optimize_video_for_gpu(video_path: str) -> str:
     temporary = target[:-4] + ".partial.mp4"
     command = [
         ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
-        "-threads", "2", "-i", source,
+        "-threads", "1", "-i", source,
         "-map", "0:v:0", "-map", "0:a?", "-map_metadata", "0",
         "-c:v", "h264_nvenc", "-preset", "p4", "-tune", "hq",
         "-rc:v", "vbr", "-cq:v", "20", "-b:v", "0",

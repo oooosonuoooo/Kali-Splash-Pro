@@ -290,6 +290,45 @@ class PlayerPlaylistTests(unittest.TestCase):
                 log.assert_any_call("Skipping HDMI-0: no valid videos in playlist.")
 
 
+class PlayerOptimizationTests(unittest.TestCase):
+    def test_optimization_uses_one_cpu_thread_and_nvenc_at_low_priority(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "source.mkv"
+            source.write_bytes(b"original video")
+            cache = Path(tmp) / "cache"
+            calls = []
+
+            def run(command, **_kwargs):
+                calls.append(command)
+                if "-encoders" in command:
+                    return mock.Mock(returncode=0, stdout=" V....D h264_nvenc", stderr="")
+                if "-c:v" in command:
+                    Path(command[-1]).write_bytes(b"optimized video")
+                return mock.Mock(returncode=0, stdout="hevc", stderr="")
+
+            which = {
+                "ffmpeg": "/usr/bin/ffmpeg",
+                "ffprobe": "/usr/bin/ffprobe",
+                "nice": "/usr/bin/nice",
+                "ionice": "/usr/bin/ionice",
+            }
+            with mock.patch.object(player, "VIDEO_CACHE_DIR", str(cache)):
+                with mock.patch.object(player.shutil, "which", side_effect=which.get):
+                    with mock.patch.object(player.subprocess, "run", side_effect=run):
+                        optimized = player.optimize_video_for_gpu(str(source))
+
+            encode = next(command for command in calls if "-c:v" in command)
+            self.assertEqual(encode[encode.index("-threads") + 1], "1")
+            self.assertEqual(encode[encode.index("-c:v") + 1], "h264_nvenc")
+            self.assertLess(encode.index("-threads"), encode.index("-i"))
+            self.assertIn("-n", encode)
+            self.assertIn("19", encode)
+            self.assertIn("-c", encode)
+            self.assertIn("3", encode)
+            self.assertEqual(Path(optimized).read_bytes(), b"optimized video")
+            self.assertEqual(source.read_bytes(), b"original video")
+
+
 class PlayerLockTests(unittest.TestCase):
     def test_duplicate_lock_returns_false(self):
         with tempfile.TemporaryDirectory() as tmp:
